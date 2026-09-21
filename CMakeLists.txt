@@ -188,6 +188,10 @@ if(EXISTS "${JETSON_MM_API_PATH}")
     NAMES nvbufsurface
     PATHS ${JETSON_LIBRARY_DIRS}
   )
+  find_library(JETSON_NVBUFSURFTRANSFORM_LIBRARY
+    NAMES nvbufsurftransform
+    PATHS ${JETSON_LIBRARY_DIRS}
+  )
   find_library(JETSON_NVMM_JPEG_LIBRARY
     NAMES nvmm_jpeg
     PATHS ${JETSON_LIBRARY_DIRS}
@@ -195,6 +199,7 @@ if(EXISTS "${JETSON_MM_API_PATH}")
 
   if(NOT JETSON_NVV4L2_LIBRARY OR
      NOT JETSON_NVBUFSURFACE_LIBRARY OR
+     NOT JETSON_NVBUFSURFTRANSFORM_LIBRARY OR
      NOT JETSON_NVMM_JPEG_LIBRARY)
     message(FATAL_ERROR
       "Jetson multimedia libraries not found in configured search paths. "
@@ -222,6 +227,7 @@ if(EXISTS "${JETSON_MM_API_PATH}")
     v4l2
     ${JETSON_NVV4L2_LIBRARY}
     ${JETSON_NVBUFSURFACE_LIBRARY}
+    ${JETSON_NVBUFSURFTRANSFORM_LIBRARY}
     ${JETSON_NVMM_JPEG_LIBRARY}
   )
 
@@ -272,18 +278,22 @@ if(EXISTS "${JETSON_MM_API_PATH}")
   list(APPEND VIDEO_ADVANCED_SOURCES
     src/video/video_decoder.cpp
     src/video/video_undistorter.cpp
+    src/video/video_scaler.cpp
     src/video/eye_image_publisher.cpp
+    src/video/wrist_camera_publisher.cpp
     src/video/cuda_eye_image_processor.cu
     src/video/cuda_nv12_undistorter.cu
   )
   list(APPEND VIDEO_ADVANCED_INCLUDE_DIRS
     ${OpenCV_INCLUDE_DIRS}
     ${CUDAToolkit_INCLUDE_DIRS}
+    ${JETSON_MM_API_PATH}/include
   )
   list(APPEND VIDEO_ADVANCED_LIBS
     ${OpenCV_LIBS}
     yaml-cpp
     ${JETSON_NVBUFSURFACE_LIBRARY}
+    ${JETSON_NVBUFSURFTRANSFORM_LIBRARY}
     ${JETSON_NVV4L2_LIBRARY}
     CUDA::cudart
     CUDA::cuda_driver

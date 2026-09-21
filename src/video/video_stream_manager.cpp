@@ -33,6 +33,7 @@
 #include "video/video_converter.hpp"
 #include "video/video_decoder.hpp"
 #include "video/video_encoder.hpp"
+#include "video/video_scaler.hpp"
 #include "video/video_recorder.hpp"
 #include "video/video_v4l2_capturer.hpp"
 #include "video/eye_image_publisher.hpp"
@@ -386,9 +387,50 @@ namespace trb::video
                         v4l2PixelFormatName(actual_pixfmt),
                         yuyv_direct_enabled_ ? "yuyv_dmabuf_direct" : "mjpeg_decode");
 
-            // Store dimensions for eye image thread
-            frame_width_ = width;
-            frame_height_ = height;
+            // Scaling happens after decode/conversion (and after optional
+            // undistortion), so capture and decoder dimensions stay at the
+            // negotiated camera resolution while encoder/output dimensions can
+            // be reduced independently.
+            scale_enabled_ = declareOrGet<bool>(nh_, "video.scale.enabled", false);
+            const int scale_width_param = declareOrGet<int>(nh_, "video.scale.width", 3200);
+            const int scale_height_param = declareOrGet<int>(nh_, "video.scale.height", 1200);
+            uint32_t output_width = width;
+            uint32_t output_height = height;
+            if (scale_enabled_)
+            {
+                if (scale_width_param <= 0 || scale_height_param <= 0 ||
+                    (scale_width_param & 1) != 0 || (scale_height_param & 1) != 0)
+                {
+                    RCLCPP_ERROR(rclcpp::get_logger("teleop_robot_bridge.video"),
+                                 "Invalid video.scale dimensions=%dx%d; dimensions must be positive and even",
+                                 scale_width_param, scale_height_param);
+                    return false;
+                }
+                const uint64_t source_area_ratio = static_cast<uint64_t>(width) *
+                                                   static_cast<uint64_t>(scale_height_param);
+                const uint64_t target_area_ratio = static_cast<uint64_t>(height) *
+                                                   static_cast<uint64_t>(scale_width_param);
+                if (source_area_ratio != target_area_ratio)
+                {
+                    RCLCPP_ERROR(rclcpp::get_logger("teleop_robot_bridge.video"),
+                                 "video.scale must preserve aspect ratio: input=%ux%u target=%dx%d",
+                                 width, height, scale_width_param, scale_height_param);
+                    return false;
+                }
+                output_width = static_cast<uint32_t>(scale_width_param);
+                output_height = static_cast<uint32_t>(scale_height_param);
+            }
+            if (scale_enabled_)
+            {
+                RCLCPP_INFO(rclcpp::get_logger("teleop_robot_bridge.video"),
+                            "VideoStreamManager: output scaling enabled input=%ux%u output=%ux%u",
+                            width, height, output_width, output_height);
+            }
+
+            // Store output dimensions for the eye image thread and status
+            // reporting. The decoder/camera configs below retain input size.
+            frame_width_ = output_width;
+            frame_height_ = output_height;
             frame_rate_ = framerate;
 
             // Save CUDA postprocess config for deferred initialization in encode thread.
@@ -410,6 +452,12 @@ namespace trb::video
             converter_config_.input_width = width;
             converter_config_.input_height = height;
             converter_config_.buffer_pool_size = conv_pool_size;
+
+            scaler_config_.input_width = width;
+            scaler_config_.input_height = height;
+            scaler_config_.output_width = output_width;
+            scaler_config_.output_height = output_height;
+            scaler_config_.buffer_pool_size = conv_pool_size;
 
             // Undistort + stereo-rectify (optional). The preferred path is
             // fused CUDA decoded-YUV422 -> rectified-NV12; the same NV12 fd
@@ -438,8 +486,8 @@ namespace trb::video
             encoder_config_.input_format = trb::video::VideoEncoder::InputFormat::kNv12;
 
             // Save encoder config for deferred initialization
-            encoder_config_.width = width;
-            encoder_config_.height = height;
+            encoder_config_.width = output_width;
+            encoder_config_.height = output_height;
             encoder_config_.framerate = framerate;
 
             std::string codec_str;
@@ -922,6 +970,7 @@ namespace trb::video
                 std::shared_ptr<trb::video::VideoDecoder> decoder_to_release;
                 std::shared_ptr<trb::video::VideoUndistorter> undistorter_to_release;
                 std::shared_ptr<trb::video::VideoConverter> converter_to_release;
+                std::shared_ptr<trb::video::VideoScaler> scaler_to_release;
 
                 {
                     std::lock_guard<std::mutex> lk(getNvBufMutex());
@@ -930,6 +979,7 @@ namespace trb::video
                         std::lock_guard<std::mutex> component_lk(pipeline_component_mutex_);
                         undistorter_to_release = std::move(undistorter_);
                         converter_to_release = std::move(converter_);
+                        scaler_to_release = std::move(scaler_);
                     }
 
                     if (leak_gpu_objects || retire_nvbuf_pipeline_objects)
@@ -937,12 +987,14 @@ namespace trb::video
                         leak_shared(decoder_to_release);
                         leak_shared(undistorter_to_release);
                         leak_shared(converter_to_release);
+                        leak_shared(scaler_to_release);
                     }
                     else
                     {
                         decoder_to_release.reset();
                         undistorter_to_release.reset();
                         converter_to_release.reset();
+                        scaler_to_release.reset();
                     }
                 }
             }
@@ -1090,6 +1142,28 @@ namespace trb::video
                     postprocess_ready = true;
                 }
             }
+
+            if (postprocess_ready && scale_enabled_)
+            {
+                auto scaler = std::make_shared<trb::video::VideoScaler>();
+                if (!scaler->initialize(scaler_config_))
+                {
+                    RCLCPP_ERROR(rclcpp::get_logger("teleop_robot_bridge.video"),
+                                 "[ENCODE] VideoScaler initialize failed while video.scale.enabled=true; "
+                                 "pipeline startup aborted");
+                    postprocess_ready = false;
+                }
+                else
+                {
+                    std::lock_guard<std::mutex> lk(pipeline_component_mutex_);
+                    scaler_ = scaler;
+                }
+            }
+            else
+            {
+                std::lock_guard<std::mutex> lk(pipeline_component_mutex_);
+                scaler_.reset();
+            }
             return postprocess_ready;
         }
 
@@ -1126,31 +1200,68 @@ namespace trb::video
                                  int &downstream_fd)
         {
             downstream_fd = -1;
+            int converted_fd = -1;
             if (undistorter_)
             {
-                if (undistorter_->processYuv422(src_fd, downstream_fd))
+                if (!undistorter_->processYuv422(src_fd, converted_fd))
                 {
-                    if (decode_us > 0)
-                    {
-                        stats_fused_decode_us_total_.fetch_add(decode_us, std::memory_order_relaxed);
-                    }
-                    return true;
+                    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teleop_robot_bridge.video"),
+                                         *rclcpp::Clock::make_shared(),
+                                         1000,
+                                         "[ENCODE] fused CUDA undistort failed; dropping frame");
+                    return false;
                 }
-
-                RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teleop_robot_bridge.video"),
-                                     *rclcpp::Clock::make_shared(),
-                                     1000,
-                                     "[ENCODE] fused CUDA undistort failed; dropping frame");
+                if (decode_us > 0)
+                {
+                    stats_fused_decode_us_total_.fetch_add(decode_us, std::memory_order_relaxed);
+                }
+            }
+            else if (converter_)
+            {
+                if (!converter_->transformSync(src_fd,
+                                               capture_timestamp_us,
+                                               decode_us,
+                                               converted_fd))
+                {
+                    return false;
+                }
+            }
+            else
+            {
                 return false;
             }
-            if (converter_)
+
+            if (!scaler_)
             {
-                return converter_->transformSync(src_fd,
-                                                 capture_timestamp_us,
-                                                 decode_us,
-                                                 downstream_fd);
+                downstream_fd = converted_fd;
+                return true;
             }
-            return false;
+
+            if (!scaler_->transformSync(converted_fd, downstream_fd))
+            {
+                if (undistorter_)
+                {
+                    undistorter_->releaseFd(converted_fd);
+                }
+                else if (converter_)
+                {
+                    converter_->releaseFd(converted_fd);
+                }
+                downstream_fd = -1;
+                return false;
+            }
+
+            // The intermediate full-resolution frame is no longer needed once
+            // NvBufSurf::NvTransform has completed synchronously.
+            if (undistorter_)
+            {
+                undistorter_->releaseFd(converted_fd);
+            }
+            else if (converter_)
+            {
+                converter_->releaseFd(converted_fd);
+            }
+            return true;
         }
 
         void encodeThreadMain()
@@ -1819,24 +1930,30 @@ namespace trb::video
         {
             std::shared_ptr<trb::video::VideoUndistorter> undistorter_owner;
             std::shared_ptr<trb::video::VideoConverter> converter_owner;
+            std::shared_ptr<trb::video::VideoScaler> scaler_owner;
             {
                 std::lock_guard<std::mutex> component_lk(pipeline_component_mutex_);
                 undistorter_owner = undistorter_;
                 converter_owner = converter_;
+                scaler_owner = scaler_;
             }
 
             return std::shared_ptr<SharedNv12Frame>(
                 new SharedNv12Frame{dmabuf_fd, timestamp_us},
-                [undistorter_owner, converter_owner](SharedNv12Frame* frame) {
+                [undistorter_owner, converter_owner, scaler_owner](SharedNv12Frame* frame) {
                     if (frame)
                     {
                         if (frame->fd >= 0)
                         {
-                            // The fd carried in SharedNv12Frame is whatever
-                            // we forwarded to the encoder/eye_image. When
-                            // undistortion is on, that fd belongs to the
-                            // undistorter pool; otherwise to the converter.
-                            if (undistorter_owner)
+                            // The downstream fd belongs to the scaler whenever
+                            // scaling is enabled. The full-resolution
+                            // conversion/undistortion fd was released as soon
+                            // as the synchronous scale completed.
+                            if (scaler_owner)
+                            {
+                                scaler_owner->releaseFd(frame->fd);
+                            }
+                            else if (undistorter_owner)
                             {
                                 undistorter_owner->releaseFd(frame->fd);
                             }
@@ -1957,6 +2074,7 @@ namespace trb::video
         std::shared_ptr<trb::video::VideoDecoder> decoder_;
         std::shared_ptr<trb::video::VideoConverter> converter_;
         std::shared_ptr<trb::video::VideoUndistorter> undistorter_;
+        std::shared_ptr<trb::video::VideoScaler> scaler_;
         std::shared_ptr<trb::video::VideoEncoder> encoder_;
         std::shared_ptr<trb::video::VideoRecorder> recorder_;
 
@@ -1968,7 +2086,9 @@ namespace trb::video
         trb::video::VideoDecoder::Config decoder_config_;
         trb::video::VideoConverter::Config converter_config_;
         trb::video::VideoUndistorter::Config undistorter_config_;
+        trb::video::VideoScaler::Config scaler_config_;
         bool undistort_enabled_{false};
+        bool scale_enabled_{false};
         bool yuyv_direct_enabled_{false};
         trb::video::VideoEncoder::Config encoder_config_;
         trb::video::VideoRecorder::Config recorder_config_;

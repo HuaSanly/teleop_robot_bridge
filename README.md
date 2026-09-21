@@ -21,7 +21,7 @@ ros2 launch teleop_robot_bridge bringup.launch.py
 参数位于 config/params.yaml，主要包括：
 
 * 信令服务：grpc.server_grpc_ip/grpc.server_grpc_port/grpc.token/grpc.device_id
-* 视频：分辨率/帧率、编码器参数、录像开关
+* 视频：分辨率/帧率、编码器参数、录像开关；`video.scale.enabled=true` 时在转换后等比缩放到 `video.scale.width/height`（默认 `3200x1200`）
 * UDP：udp.server_udp_ip/udp.server_udp_port、FEC、节流与队列策略
 * 姿态接收：pose_udp.* 相关开关与话题参数
 ## 目录结构（核心）

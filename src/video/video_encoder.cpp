@@ -715,12 +715,18 @@ namespace trb::video
             return false;
         }
 
-        const uint32_t level = is_h265
-                                   ? static_cast<uint32_t>(V4L2_MPEG_VIDEO_H265_LEVEL_5_1_MAIN_TIER)
-                                   : static_cast<uint32_t>(V4L2_MPEG_VIDEO_H264_LEVEL_5_1);
-        if (encoder_->setLevel(level) < 0)
+        // Leave H.265 level unset so the driver can choose the lowest valid
+        // level from the configured dimensions, frame rate, and bitrate. For
+        // example, 5184x1944 exceeds the Level 5.1 picture-size limit and the
+        // Thor encoder correctly selects Level 6.
+        if (is_h265)
         {
-            std::cerr << "Failed to set level" << std::endl;
+            RCLCPP_INFO(rclcpp::get_logger("teleop_robot_bridge.video"),
+                        "VideoEncoder: H.265 level=auto");
+        }
+        else if (encoder_->setLevel(V4L2_MPEG_VIDEO_H264_LEVEL_5_1) < 0)
+        {
+            std::cerr << "Failed to set H.264 level" << std::endl;
             return false;
         }
 

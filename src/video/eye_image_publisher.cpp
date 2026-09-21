@@ -5,6 +5,7 @@
 #include <chrono>
 
 #include <cuda_runtime_api.h>
+#include "sensor_msgs/image_encodings.hpp"
 
 namespace trb::video
 {
@@ -167,7 +168,7 @@ void EyeImagePublisher::publishImage(rclcpp::Publisher<sensor_msgs::msg::Image>:
     msg.header.frame_id = config_.frame_id;
     msg.height = config_.output_height;
     msg.width = config_.output_width;
-    msg.encoding = "rgb8";
+    msg.encoding = sensor_msgs::image_encodings::RGB8;
     msg.is_bigendian = false;
     msg.step = config_.output_width * 3;
     msg.data.assign(rgb_data, rgb_data + static_cast<size_t>(msg.step) * msg.height);

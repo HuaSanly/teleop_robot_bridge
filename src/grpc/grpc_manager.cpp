@@ -338,7 +338,6 @@ namespace trb
         }
         return true;
     }
-f
     std::vector<signaling::UnpairedEndpoint> GrpcManager::ListUnpaired(const std::string &desired_device_type_code)
     {
         std::vector<signaling::UnpairedEndpoint> endpoints;

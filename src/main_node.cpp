@@ -8,7 +8,10 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include <linux/videodev2.h>
 
 #include "utils/teleop_logger.hpp"
 
@@ -231,6 +234,7 @@ namespace trb
         direct_running_mode_ = declareOrGet<bool>(*this, "debug.direct_running_mode", false);
         loadPairingParams();
         loadRobotTelemetryParams();
+        startWristCameras();
 
         telemetry_battery_sub_ = this->create_subscription<AgvBatteryStateMsg>(
             "/agv_battery_state", 10,
@@ -313,10 +317,87 @@ namespace trb
         RCLCPP_INFO(this->get_logger(), "teleop_robot_bridge node initialized");
     }
 
+    void MainNode::startWristCameras()
+    {
+        const bool enabled = declareOrGet<bool>(*this, "video.wrist_cameras.enabled", true);
+        if (!enabled)
+        {
+            RCLCPP_INFO(this->get_logger(), "Wrist cameras disabled by configuration");
+            return;
+        }
+
+        const int64_t configured_width = declareOrGet<int64_t>(*this, "video.wrist_cameras.width", 640);
+        const int64_t configured_height = declareOrGet<int64_t>(*this, "video.wrist_cameras.height", 480);
+        const int64_t configured_fps = declareOrGet<int64_t>(*this, "video.wrist_cameras.fps", 30);
+        const int64_t configured_buffer_count = declareOrGet<int64_t>(*this, "video.wrist_cameras.buffer_count", 4);
+        const int64_t configured_retry_interval =
+            declareOrGet<int64_t>(*this, "video.wrist_cameras.retry_interval_ms", 1000);
+        const std::string pixel_format = declareOrGet<std::string>(*this, "video.wrist_cameras.pixel_format", "yuyv");
+
+        if (configured_width <= 0 || configured_height <= 0 || configured_fps <= 0 || configured_buffer_count <= 0 ||
+            configured_retry_interval <= 0)
+        {
+            RCLCPP_ERROR(this->get_logger(), "Invalid video.wrist_cameras dimensions, fps, buffer count, or retry interval");
+            return;
+        }
+        if (pixel_format != "yuyv")
+        {
+            RCLCPP_WARN(this->get_logger(), "video.wrist_cameras.pixel_format='%s' is unsupported; using yuyv",
+                        pixel_format.c_str());
+        }
+
+        trb::video::WristCameraPublisher::Config common_config;
+        common_config.width = static_cast<uint32_t>(configured_width);
+        common_config.height = static_cast<uint32_t>(configured_height);
+        common_config.framerate = static_cast<uint32_t>(configured_fps);
+        common_config.pixel_format = V4L2_PIX_FMT_YUYV;
+        common_config.buffer_count = static_cast<uint32_t>(configured_buffer_count);
+        common_config.retry_interval_ms = static_cast<uint32_t>(configured_retry_interval);
+
+        auto left_config = common_config;
+        left_config.device_path = declareOrGet<std::string>(*this, "video.wrist_cameras.left.device", "/dev/video2");
+        left_config.topic = declareOrGet<std::string>(*this, "video.wrist_cameras.left.topic", "data/left_wrist_image");
+        left_config.frame_id = declareOrGet<std::string>(*this, "video.wrist_cameras.left.frame_id", "left_wrist_camera");
+
+        auto right_config = common_config;
+        right_config.device_path = declareOrGet<std::string>(*this, "video.wrist_cameras.right.device", "/dev/video4");
+        right_config.topic = declareOrGet<std::string>(*this, "video.wrist_cameras.right.topic", "data/right_wrist_image");
+        right_config.frame_id = declareOrGet<std::string>(*this, "video.wrist_cameras.right.frame_id", "right_wrist_camera");
+
+        left_wrist_camera_ = std::make_unique<trb::video::WristCameraPublisher>(*this, "left", std::move(left_config));
+        right_wrist_camera_ = std::make_unique<trb::video::WristCameraPublisher>(*this, "right", std::move(right_config));
+
+        if (!left_wrist_camera_->start())
+        {
+            left_wrist_camera_.reset();
+            RCLCPP_ERROR(this->get_logger(), "Failed to start left wrist camera worker");
+        }
+        if (!right_wrist_camera_->start())
+        {
+            right_wrist_camera_.reset();
+            RCLCPP_ERROR(this->get_logger(), "Failed to start right wrist camera worker");
+        }
+    }
+
+    void MainNode::stopWristCameras()
+    {
+        if (left_wrist_camera_)
+        {
+            left_wrist_camera_->stop();
+            left_wrist_camera_.reset();
+        }
+        if (right_wrist_camera_)
+        {
+            right_wrist_camera_->stop();
+            right_wrist_camera_.reset();
+        }
+    }
+
     MainNode::~MainNode()
     {
         RCLCPP_INFO(this->get_logger(), "Shutting down MainNode...");
         shutting_down_.store(true, std::memory_order_release);
+        stopWristCameras();
 
         if (grpc_module_)
         {

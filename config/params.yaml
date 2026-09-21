@@ -109,6 +109,26 @@
       profile: [5184, 1944, 30]
       device: "/dev/video0"
       pixel_format: "mjpeg"
+      scale:
+        enabled: true
+        width: 3200
+        height: 1200
+      wrist_cameras:
+        enabled: true
+        width: 640
+        height: 480
+        fps: 30
+        pixel_format: "yuyv"
+        buffer_count: 4
+        retry_interval_ms: 1000
+        left:
+          device: "/dev/video2"
+          topic: "data/left_wrist_image"
+          frame_id: "left_wrist_camera"
+        right:
+          device: "/dev/video4"
+          topic: "data/right_wrist_image"
+          frame_id: "right_wrist_camera"
       sbs_crop:
         enabled: false
         margin_px: 0
@@ -123,7 +143,7 @@
         consecutive_bad_frame_threshold: 5
         restart_backoff_ms: 500
       encoder:
-        codec: "h265"
+        codec: "h264"
         bitrate: 30000000
         i_frame_interval: 10
         idr_interval_gops: 1
@@ -156,10 +176,10 @@
           enabled: false
           interval_sec: 3
       eye_image:
-        enabled: false
+        enabled: true
         output_width: 640
-        output_height: 360
-        max_fps: 10
+        output_height: 480
+        max_fps: 30
         left_topic: "data/left_eye_image"
         right_topic: "data/right_eye_image"
       undistort:

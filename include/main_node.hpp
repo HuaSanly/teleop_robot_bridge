@@ -25,6 +25,7 @@
 #include "telemetry/robot_telemetry_types.hpp"
 #include "udp/udp_module.hpp"
 #include "video/video_module.hpp"
+#include "video/wrist_camera_publisher.hpp"
 
 namespace trb
 {
@@ -119,6 +120,11 @@ namespace trb
         std::unique_ptr<trb::audio::AudioModule> audio_module_;
         std::unique_ptr<trb::udp::UdpModule> udp_module_;
         std::unique_ptr<trb::video::VideoModule> video_module_;
+        std::unique_ptr<trb::video::WristCameraPublisher> left_wrist_camera_;
+        std::unique_ptr<trb::video::WristCameraPublisher> right_wrist_camera_;
+
+        void startWristCameras();
+        void stopWristCameras();
 
         rclcpp::TimerBase::SharedPtr negotiation_retry_timer_;
         rclcpp::TimerBase::SharedPtr peer_subscription_retry_timer_;

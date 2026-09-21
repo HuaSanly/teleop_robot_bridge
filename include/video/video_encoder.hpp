@@ -30,8 +30,6 @@ namespace trb::video
     class VideoEncoder
     {
     public:
-        // Future-proofing for H.265. Only kH264 is implemented today; constructing
-        // with kH265 logs and fails initialize().
         enum class Codec
         {
             kH264 = 0,

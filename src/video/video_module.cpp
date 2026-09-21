@@ -190,6 +190,40 @@ namespace trb::video
             }
         }
 
+        const bool scale_enabled = declareOrGet<bool>(node, "video.scale.enabled", false);
+        const int64_t scale_width_param = declareOrGet<int64_t>(node, "video.scale.width", 3200);
+        const int64_t scale_height_param = declareOrGet<int64_t>(node, "video.scale.height", 1200);
+        if (scale_enabled && scale_width_param > 0 && scale_height_param > 0 &&
+            (scale_width_param % 2) == 0 && (scale_height_param % 2) == 0)
+        {
+            const uint64_t source_ratio = static_cast<uint64_t>(config.width) *
+                                          static_cast<uint64_t>(scale_height_param);
+            const uint64_t target_ratio = static_cast<uint64_t>(config.height) *
+                                          static_cast<uint64_t>(scale_width_param);
+            if (source_ratio == target_ratio)
+            {
+                config.width = static_cast<uint32_t>(scale_width_param);
+                config.height = static_cast<uint32_t>(scale_height_param);
+            }
+            else
+            {
+                RCLCPP_ERROR(node.get_logger(),
+                             "video.scale must preserve aspect ratio: input=%ux%u target=%ldx%ld; "
+                             "VideoConfig will keep the input dimensions",
+                             config.width,
+                             config.height,
+                             static_cast<long>(scale_width_param),
+                             static_cast<long>(scale_height_param));
+            }
+        }
+        else if (scale_enabled)
+        {
+            RCLCPP_ERROR(node.get_logger(),
+                         "Invalid video.scale dimensions=%ldx%ld; VideoConfig will keep the input dimensions",
+                         static_cast<long>(scale_width_param),
+                         static_cast<long>(scale_height_param));
+        }
+
         std::string codec = declareOrGet<std::string>(node, "video.encoder.codec", "h264");
         std::transform(codec.begin(), codec.end(), codec.begin(), [](unsigned char value) {
             return static_cast<char>(std::tolower(value));
