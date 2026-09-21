@@ -264,7 +264,7 @@ public:
             return false;
         }
         rgb_bytes_ = static_cast<size_t>(out_width_) * static_cast<size_t>(out_height_) * 3u;
-        ret = cudaMalloc(reinterpret_cast<void **>(&device_rgb_), rgb_bytes_);
+        ret = cudaMalloc(reinterpret_cast<void **>(&device_rgb_), rgb_bytes_ * 2u);
         if (ret != cudaSuccess)
         {
             reset();
@@ -275,11 +275,39 @@ public:
 
     bool processEye(NvBufSurface *src, bool is_right_eye, uint8_t *rgb_out, size_t rgb_size, CudaEyeImageResult *result)
     {
+        return processInternal(src,
+                               !is_right_eye,
+                               is_right_eye,
+                               is_right_eye ? nullptr : rgb_out,
+                               is_right_eye ? rgb_out : nullptr,
+                               rgb_size,
+                               result);
+    }
+
+    bool processEyes(NvBufSurface *src,
+                     uint8_t *left_rgb_out,
+                     uint8_t *right_rgb_out,
+                     size_t rgb_size,
+                     CudaEyeImageResult *result)
+    {
+        return processInternal(src, true, true, left_rgb_out, right_rgb_out, rgb_size, result);
+    }
+
+    bool processInternal(NvBufSurface *src,
+                         bool process_left,
+                         bool process_right,
+                         uint8_t *left_rgb_out,
+                         uint8_t *right_rgb_out,
+                         size_t rgb_size,
+                         CudaEyeImageResult *result)
+    {
         if (result)
         {
             *result = CudaEyeImageResult{};
         }
-        if (!src || !rgb_out || rgb_size < rgb_bytes_ || !stream_ || !device_rgb_)
+        if (!src || (!process_left && !process_right) || !stream_ || !device_rgb_ ||
+            (process_left && (!left_rgb_out || rgb_size < rgb_bytes_)) ||
+            (process_right && (!right_rgb_out || rgb_size < rgb_bytes_)))
         {
             setFailure(result, "invalid-input", -1);
             return false;
@@ -310,24 +338,43 @@ public:
 
         const auto &sp = src->surfaceList[0];
         const auto &pp = sp.planeParams;
-        const int eye_offset_x = is_right_eye ? static_cast<int>(src_width_ / 2u) : 0;
+        const int eye_offset_x = static_cast<int>(src_width_ / 2u);
 
         const dim3 block(16, 16);
         const dim3 grid((out_width_ + block.x - 1) / block.x,
                         (out_height_ + block.y - 1) / block.y);
 
         const auto kernel_start = std::chrono::steady_clock::now();
-        eyeRgbKernel<<<grid, block, 0, stream_>>>(
-            static_cast<const uint8_t *>(src_frame.frame.frame.pPitch[0]),
-            static_cast<const uint8_t *>(src_frame.frame.frame.pPitch[1]),
-            device_rgb_,
-            static_cast<int>(src_width_),
-            static_cast<int>(src_height_),
-            static_cast<int>(pp.pitch[0]),
-            static_cast<int>(pp.pitch[1]),
-            static_cast<int>(out_width_),
-            static_cast<int>(out_height_),
-            eye_offset_x);
+        const auto *src_y = static_cast<const uint8_t *>(src_frame.frame.frame.pPitch[0]);
+        const auto *src_uv = static_cast<const uint8_t *>(src_frame.frame.frame.pPitch[1]);
+        if (process_left)
+        {
+            eyeRgbKernel<<<grid, block, 0, stream_>>>(
+                src_y,
+                src_uv,
+                device_rgb_,
+                static_cast<int>(src_width_),
+                static_cast<int>(src_height_),
+                static_cast<int>(pp.pitch[0]),
+                static_cast<int>(pp.pitch[1]),
+                static_cast<int>(out_width_),
+                static_cast<int>(out_height_),
+                0);
+        }
+        if (process_right)
+        {
+            eyeRgbKernel<<<grid, block, 0, stream_>>>(
+                src_y,
+                src_uv,
+                device_rgb_ + rgb_bytes_,
+                static_cast<int>(src_width_),
+                static_cast<int>(src_height_),
+                static_cast<int>(pp.pitch[0]),
+                static_cast<int>(pp.pitch[1]),
+                static_cast<int>(out_width_),
+                static_cast<int>(out_height_),
+                eye_offset_x);
+        }
 
         cudaError_t ret = cudaGetLastError();
         if (ret != cudaSuccess)
@@ -336,12 +383,25 @@ public:
             resetMappedFrame(src_frame);
             return false;
         }
-        ret = cudaMemcpyAsync(rgb_out, device_rgb_, rgb_bytes_, cudaMemcpyDeviceToHost, stream_);
-        if (ret != cudaSuccess)
+        if (process_left)
         {
-            setFailure(result, "copy-rgb", static_cast<int>(ret));
-            resetMappedFrame(src_frame);
-            return false;
+            ret = cudaMemcpyAsync(left_rgb_out, device_rgb_, rgb_bytes_, cudaMemcpyDeviceToHost, stream_);
+            if (ret != cudaSuccess)
+            {
+                setFailure(result, "copy-left-rgb", static_cast<int>(ret));
+                resetMappedFrame(src_frame);
+                return false;
+            }
+        }
+        if (process_right)
+        {
+            ret = cudaMemcpyAsync(right_rgb_out, device_rgb_ + rgb_bytes_, rgb_bytes_, cudaMemcpyDeviceToHost, stream_);
+            if (ret != cudaSuccess)
+            {
+                setFailure(result, "copy-right-rgb", static_cast<int>(ret));
+                resetMappedFrame(src_frame);
+                return false;
+            }
         }
 
         const auto sync_start = std::chrono::steady_clock::now();
@@ -423,6 +483,15 @@ bool CudaEyeImageProcessor::initialize(uint32_t src_width, uint32_t src_height, 
 bool CudaEyeImageProcessor::processEye(NvBufSurface *src, bool is_right_eye, uint8_t *rgb_out, size_t rgb_size, CudaEyeImageResult *result)
 {
     return impl_->processEye(src, is_right_eye, rgb_out, rgb_size, result);
+}
+
+bool CudaEyeImageProcessor::processEyes(NvBufSurface *src,
+                                        uint8_t *left_rgb_out,
+                                        uint8_t *right_rgb_out,
+                                        size_t rgb_size,
+                                        CudaEyeImageResult *result)
+{
+    return impl_->processEyes(src, left_rgb_out, right_rgb_out, rgb_size, result);
 }
 
 void CudaEyeImageProcessor::reset()

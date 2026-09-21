@@ -65,8 +65,12 @@ bool EyeImagePublisher::initialize(rclcpp::Node & nh, uint32_t src_width, uint32
         return true;
     }
 
-    left_pub_ = nh.create_publisher<sensor_msgs::msg::Image>(config_.left_topic, rclcpp::QoS(1));
-    right_pub_ = nh.create_publisher<sensor_msgs::msg::Image>(config_.right_topic, rclcpp::QoS(1));
+    // Eye images are high-rate sensor data. Best-effort delivery prevents a
+    // slow subscriber from blocking the eye worker and retaining a video pool
+    // buffer needed by the main stream.
+    const auto qos = rclcpp::SensorDataQoS();
+    left_pub_ = nh.create_publisher<sensor_msgs::msg::Image>(config_.left_topic, qos);
+    right_pub_ = nh.create_publisher<sensor_msgs::msg::Image>(config_.right_topic, qos);
 
     rgb_buffer_size_ = static_cast<size_t>(config_.output_width) * config_.output_height * 3u;
     rgb_buffers_.resize(2, nullptr);
@@ -112,7 +116,32 @@ void EyeImagePublisher::processFrame(NvBufSurface* src_surface, uint64_t timesta
     const uint64_t n = frame_count_.fetch_add(1);
     const auto t0 = std::chrono::steady_clock::now();
 
-    if (left_pub_->get_subscription_count() > 0)
+    const bool left_has_subscribers = left_pub_->get_subscription_count() > 0;
+    const bool right_has_subscribers = right_pub_->get_subscription_count() > 0;
+
+    if (left_has_subscribers && right_has_subscribers)
+    {
+        CudaEyeImageResult result;
+        if (cuda_processor_->processEyes(src_surface,
+                                         rgb_buffers_[0],
+                                         rgb_buffers_[1],
+                                         rgb_buffer_size_,
+                                         &result))
+        {
+            publishImage(left_pub_, rgb_buffers_[0], timestamp_us);
+            publishImage(right_pub_, rgb_buffers_[1], timestamp_us);
+        }
+        else
+        {
+            RCLCPP_WARN_THROTTLE(rclcpp::get_logger("teleop_robot_bridge.video"),
+                                 *rclcpp::Clock::make_shared(),
+                                 1000,
+                                 "EyeImagePublisher: stereo CUDA process failed stage=%s err=%d",
+                                 result.error_stage,
+                                 result.error_code);
+        }
+    }
+    else if (left_has_subscribers)
     {
         CudaEyeImageResult result;
         if (cuda_processor_->processEye(src_surface, false, rgb_buffers_[0], rgb_buffer_size_, &result))
@@ -130,7 +159,7 @@ void EyeImagePublisher::processFrame(NvBufSurface* src_surface, uint64_t timesta
         }
     }
 
-    if (right_pub_->get_subscription_count() > 0)
+    else if (right_has_subscribers)
     {
         CudaEyeImageResult result;
         if (cuda_processor_->processEye(src_surface, true, rgb_buffers_[1], rgb_buffer_size_, &result))

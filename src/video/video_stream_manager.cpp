@@ -662,11 +662,27 @@ namespace trb::video
                 eye_image_max_fps_ = declareOrGet<int>(nh_, "video.eye_image.max_fps", 10);
                 if (eye_image_max_fps_ < 0)
                     eye_image_max_fps_ = 0;
-                eye_image_min_interval_us_ = eye_image_max_fps_ > 0
-                    ? static_cast<int64_t>(1000000 / std::max(1, eye_image_max_fps_))
-                    : 0;
+                // Do not rate-limit when the requested eye rate is at least
+                // the configured source rate. A strict 33,333us gate at a
+                // nominal 30Hz source turns normal timestamp jitter into a
+                // repeating 20Hz/15Hz pattern.
+                eye_image_rate_limit_enabled_ = eye_image_max_fps_ > 0 &&
+                                                 static_cast<uint32_t>(eye_image_max_fps_) < frame_rate_;
                 eye_image_left_topic_ = declareOrGet<std::string>(nh_, "video.eye_image.left_topic", "data/left_eye_image");
                 eye_image_right_topic_ = declareOrGet<std::string>(nh_, "video.eye_image.right_topic", "data/right_eye_image");
+            }
+
+            // The eye worker holds one downstream NV12 fd while it performs
+            // CUDA crop/scale/RGB and publishes. Give the main encoder path
+            // one additional pool slot so that this reference can never
+            // consume the entire configured postprocess pool.
+            const uint32_t eye_pool_reserve = eye_image_enabled_ ? 1u : 0u;
+            const uint32_t postprocess_pool_size = conv_pool_size + eye_pool_reserve;
+            converter_config_.buffer_pool_size = postprocess_pool_size;
+            scaler_config_.buffer_pool_size = postprocess_pool_size;
+            if (undistort_enabled_)
+            {
+                undistorter_config_.buffer_pool_size = postprocess_pool_size;
             }
 
             restart_on_bad_frames_ = declareOrGet<bool>(nh_, "video.decoder.restart_on_bad_frames", true);
@@ -830,6 +846,7 @@ namespace trb::video
                 while (!nv12_queue_.empty())
                     nv12_queue_.pop();
                 eye_image_inflight_.store(false, std::memory_order_relaxed);
+                eye_image_next_emit_steady_us_ = 0.0;
             }
             eye_image_publisher_ready_.store(false, std::memory_order_relaxed);
             eye_image_has_subscribers_.store(false, std::memory_order_relaxed);
@@ -844,8 +861,9 @@ namespace trb::video
             {
                 assignWorkerThread(eye_image_thread_, std::thread(&Impl::eyeImageThreadMain, this), "eye_image", true);
                 RCLCPP_INFO(rclcpp::get_logger("teleop_robot_bridge.video"),
-                            "VideoStreamManager: Started with zero-copy eye_image pipeline (max_fps=%d)",
-                            eye_image_max_fps_);
+                            "VideoStreamManager: Started with zero-copy eye_image pipeline (max_fps=%d rate_limit=%s)",
+                            eye_image_max_fps_,
+                            eye_image_rate_limit_enabled_ ? "phase" : "off");
             }
             else
             {
@@ -1995,14 +2013,25 @@ namespace trb::video
             const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                        std::chrono::steady_clock::now().time_since_epoch())
                                        .count();
-            if (eye_image_min_interval_us_ > 0)
+            if (eye_image_rate_limit_enabled_)
             {
-                const int64_t last_us = eye_image_last_enqueue_steady_us_.load(std::memory_order_relaxed);
-                if (last_us > 0 && now_us - last_us < eye_image_min_interval_us_)
+                const double frame_time_us = frame->timestamp_us > 0
+                    ? static_cast<double>(frame->timestamp_us)
+                    : static_cast<double>(now_us);
+                const double period_us = 1000000.0 / static_cast<double>(eye_image_max_fps_);
+                if (eye_image_next_emit_steady_us_ <= 0.0)
+                {
+                    eye_image_next_emit_steady_us_ = frame_time_us;
+                }
+                if (frame_time_us + 0.5 < eye_image_next_emit_steady_us_)
                 {
                     eye_image_skip_rate_limit_.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
+                do
+                {
+                    eye_image_next_emit_steady_us_ += period_us;
+                } while (eye_image_next_emit_steady_us_ <= frame_time_us + 0.5);
             }
 
             bool expected = false;
@@ -2108,7 +2137,7 @@ namespace trb::video
         int eye_image_output_width_{640};
         int eye_image_output_height_{360};
         int eye_image_max_fps_{10};
-        int64_t eye_image_min_interval_us_{100000};
+        bool eye_image_rate_limit_enabled_{false};
         std::string eye_image_left_topic_;
         std::string eye_image_right_topic_;
 
@@ -2134,6 +2163,7 @@ namespace trb::video
         std::atomic<uint64_t> eye_image_skip_busy_{0};
         std::atomic<uint64_t> eye_image_drop_queue_{0};
         std::atomic<uint64_t> eye_image_process_us_total_{0};
+        double eye_image_next_emit_steady_us_{0.0};
 
         // NVENC cold-start warmup: the first ~1s after the encoder is opened,
         // NvMMLiteOpen + session init stalls the pipeline ~200-400 ms so the

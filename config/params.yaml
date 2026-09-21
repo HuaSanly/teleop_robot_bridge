@@ -122,11 +122,11 @@
         buffer_count: 4
         retry_interval_ms: 1000
         left:
-          device: "/dev/video2"
+          device: "/dev/video4"
           topic: "data/left_wrist_image"
           frame_id: "left_wrist_camera"
         right:
-          device: "/dev/video4"
+          device: "/dev/video2"
           topic: "data/right_wrist_image"
           frame_id: "right_wrist_camera"
       sbs_crop:

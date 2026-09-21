@@ -30,6 +30,11 @@ public:
 
     bool initialize(uint32_t src_width, uint32_t src_height, uint32_t out_width, uint32_t out_height);
     bool processEye(NvBufSurface *src, bool is_right_eye, uint8_t *rgb_out, size_t rgb_size, CudaEyeImageResult *result);
+    bool processEyes(NvBufSurface *src,
+                     uint8_t *left_rgb_out,
+                     uint8_t *right_rgb_out,
+                     size_t rgb_size,
+                     CudaEyeImageResult *result);
     void reset();
 
 private:
