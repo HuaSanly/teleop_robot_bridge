@@ -1,0 +1,102 @@
+# ROS / catkin / colcon build outputs
+build/
+devel/
+install/
+log/
+logs/
+.catkin_tools/
+.colcon/
+.catkin_workspace
+catkin_generated/
+test_results/
+
+# CMake / Ninja generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+build.ninja
+rules.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+install_manifest.txt
+cmake-build-*/
+
+# C / C++ build artifacts
+*.o
+*.obj
+*.lo
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.gcno
+*.gcda
+*.gcov
+
+# Protobuf / gRPC generated files
+*.pb.cc
+*.pb.h
+*.grpc.pb.cc
+*.grpc.pb.h
+*_pb2.py
+*_pb2_grpc.py
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ROS bags, recordings, and runtime captures
+*.bag
+*.bag.active
+*.db3
+*.mcap
+recordings/
+captures/
+rosbags/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.h264
+*.h265
+*.hevc
+*.yuv
+*.pcm
+*.wav
+
+# Runtime logs and crash dumps
+*.log
+*.pid
+core
+core.*
+nohup.out
+.ros/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+*.code-workspace
+*.user
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Temporary reference copy of the latest backend (never commit)
+sync_back_new/

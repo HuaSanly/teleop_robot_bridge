@@ -1,0 +1,11 @@
+<launch>
+  <arg name="node_name" default="teleop_robot_bridge" />
+
+  <rosparam command="load" file="$(find teleop_robot_bridge)/config/params.yaml" />
+  <rosparam command="load" file="$(find teleop_robot_bridge)/config/fov.yaml" />
+
+  <node pkg="teleop_robot_bridge"
+        type="teleop_robot_bridge_node"
+        name="$(arg node_name)"
+        output="screen" />
+</launch>

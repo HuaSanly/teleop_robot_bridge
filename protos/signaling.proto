@@ -1,0 +1,290 @@
+syntax = "proto3";
+
+option csharp_namespace = "GrpcHttp3Demo.Protos";
+
+package signaling;
+
+import "google/protobuf/empty.proto";
+
+// --- 1. HELLO (注册) ---
+message DeviceHardwareDescriptor {
+  optional uint32 hardware_generation = 1;
+  optional string hardware_version = 2;
+  optional string hardware_revision = 3;
+  map<string, string> extensions = 100;
+}
+
+message DeviceRuntimeDescriptor {
+  optional string firmware_version = 1;
+  optional string software_version = 2;
+  optional string operating_system = 3;
+  optional string operating_system_version = 4;
+  optional string runtime_version = 5;
+  optional string build_id = 6;
+  repeated string capabilities = 7;
+  map<string, string> extensions = 100;
+}
+
+message RegisterRequest {
+  string device_id = 3; // 后端登记生成的稳定设备 ID，1-64 UTF-8 bytes，仅允许 A-Z a-z 0-9 _ - . :
+  DeviceRuntimeDescriptor runtime = 6;
+}
+
+// --- 7. 列出未配对的对端 ---
+message ListUnpairedRequest {
+  string desired_device_type_code = 2; // 必填；匹配该设备类型节点及完整子树
+}
+
+message ListUnpairedResponse {
+  repeated UnpairedEndpoint endpoints = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+message UnpairedEndpoint {
+  string session_id = 1;
+  string device_id = 2;
+  string device_type_code = 6;
+  DeviceHardwareDescriptor hardware = 7;
+  DeviceRuntimeDescriptor runtime = 8;
+}
+
+message EndpointInfo {
+  string session_id = 1;
+  string device_id = 2;
+  string device_type_code = 6;
+  DeviceHardwareDescriptor hardware = 7;
+  DeviceRuntimeDescriptor runtime = 8;
+}
+
+// --- 8. 事件订阅与推送 ---
+message EventSubscribe {
+  string session_id = 1; // 客户端自己的 SessionId，用于绑定事件流
+}
+
+message PairEvent {
+  enum Op {
+    REQUEST = 0;
+    ACCEPT = 1;
+    REJECT = 2;
+    UNPAIR = 3;
+  }
+  Op op = 1;
+  EndpointInfo peer = 2;
+}
+
+message EventMessage {
+  string sender_session_id = 1;
+  string target_session_id = 2;
+  int64 timestamp = 3;
+
+  oneof payload {
+    PairEvent pair = 10;
+    SystemCommand system = 11; // [新增] 系统指令
+  }
+}
+
+message SystemCommand {
+  enum Action {
+    UNKNOWN = 0;
+    RECONNECT_GRPC = 1; // 服务端要求客户端重连 gRPC
+    REQUEST_PING = 2;   // 服务端要求客户端恢复/加快心跳（通常也意味着需要重建推送通道）
+    REQUEST_UDP_HELLO = 3; // 服务端要求客户端重发 UDP HELLO（重建 UDP 端点映射）
+  }
+  Action action = 1;
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  string session_id = 3; // [新增] 唯一会话ID，用于UDP握手
+  string client_ip = 4;  // [新增] 你的公网IP
+  int32 client_port = 5; // [新增] 你的公网端口
+  string device_type_code = 6;
+  DeviceHardwareDescriptor hardware = 7;
+}
+
+// --- 2. PING (心跳) ---
+message Heartbeat {
+  // Unix 时间戳（毫秒，UTC，Unix epoch: 1970-01-01T00:00:00Z）
+  // 建议使用：DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+  int64 client_time = 1;
+}
+
+message HeartbeatAck {
+  // Unix 时间戳（毫秒，UTC，Unix epoch）
+  int64 server_time = 1;
+  bool push_connected = 2; // [改名] 服务端视角的推送通道状态（WS 或 gRPC streaming）
+}
+
+// --- 3. PAR1 (配对 - 三方握手) ---
+message PairRequest {
+  Operation op = 1;
+  string peer_session_id = 2;
+  PairState state = 3; // [新增] 对应 Flags
+
+  enum Operation {
+    PAIR = 0;
+    UNPAIR = 1;
+  }
+
+  enum PairState {
+    REQUEST = 0;  // Flags 0x00: 发起请求 / 通知机器人
+    PENDING = 1;  // Flags 0x01: 服务器收到，处理中
+    ACCEPT = 2;   // Flags 0x03: 同意
+    REJECT = 3;   // Flags 0x01 (Code=Rejected): 拒绝
+  }
+}
+
+message PairResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// --- 4. SUB1 (订阅) ---
+message SubscribeRequest {
+  Operation op = 1;
+  string publisher_session_id = 2; // 订阅谁（SessionId）
+
+  // 订阅目标发布会话已经在 Manifest 中声明的 Publisher-local Prefix。
+  // 同一 Prefix 在不同 PublisherSessionId 下可以具有不同语义。
+  repeated uint32 subscribe_prefixes = 8;
+
+  enum Operation {
+    SUBSCRIBE = 0;
+    UNSUBSCRIBE = 1;
+  }
+}
+
+message SubscribeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// --- 5. Publisher-local Stream Manifest ---
+message StreamManifestDeclaration {
+  uint32 prefix = 1;             // 当前发布会话内的 UDP 首字节，范围 0..255
+  string stream_code = 2;        // 发布者定义的稳定流语义代码
+  string display_name = 3;       // 展示名称
+  string description = 4;        // 简短说明
+  string stream_class_code = 5;  // 必须引用后端已启用的流大类
+  string protocol_code = 6;      // 可选；空值表示透明自定义协议
+}
+
+message StreamManifestItem {
+  string publisher_session_id = 1;
+  uint32 prefix = 2;
+  string stream_code = 3;
+  string display_name = 4;
+  string description = 5;
+  string stream_class_code = 6;
+  string protocol_code = 7;
+  int64 declared_unix_time_ms = 8;
+}
+
+message PublishStreamManifestRequest {
+  repeated StreamManifestDeclaration streams = 1; // 一条或多条增量增加/替换
+}
+
+message DeleteStreamManifestRequest {
+  repeated uint32 prefixes = 1; // 一条或多条增量删除
+}
+
+message StreamManifestMutationResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 version = 3;
+  repeated StreamManifestItem items = 4;
+}
+
+message GetStreamManifestRequest {
+  string publisher_session_id = 1;
+}
+
+message GetStreamManifestResponse {
+  string publisher_session_id = 1;
+  uint64 version = 2;
+  repeated StreamManifestItem items = 3;
+}
+
+// --- 5A. Publisher-local generic StreamConfig ---
+message PublishStreamConfigRequest {
+  uint32 prefix = 1;
+  uint32 schema_version = 3;
+  bytes payload = 4; // 默认最大 64 KiB，由服务端配置限制
+}
+
+message GetStreamConfigRequest {
+  string publisher_session_id = 1;
+  uint32 prefix = 2;
+}
+
+message StreamConfigItem {
+  string publisher_session_id = 1;
+  uint32 prefix = 2;
+  uint32 schema_version = 4;
+  bytes payload = 5;
+  string config_id = 6;
+  uint64 version = 7;
+  int64 updated_unix_time_ms = 8;
+}
+
+message StreamConfigMutationResponse {
+  bool success = 1;
+  string message = 2;
+  StreamConfigItem item = 3;
+}
+
+// --- 9. P2P 信息下发（客户端主动拉取） ---
+message GetP2pInfoResponse {
+  // 未就绪时仅返回 ready=false
+  bool ready = 1;
+
+  // 对端信息（ready=true 时有效）
+  string peer_session_id = 2;
+  string peer_public_ip = 3;
+  int32 peer_public_port = 4;
+
+  // 共享密钥（ready=true 时有效）
+  bytes shared_key = 5;
+}
+
+// --- 6. START/STOP (控制 - 带资源类型) ---
+message ControlCommand {
+  CommandType type = 1;
+  ResourceType resource = 2; // [新增] 控制哪个资源 (Video/Pose)
+
+  enum CommandType {
+    STOP = 0;
+    START = 1;
+    FORCE_KEYFRAME = 2;
+  }
+
+  enum ResourceType {
+    ALL = 0;
+    VIDEO = 1; // 对应 Category=1
+    POSE = 2;  // 对应 Category=2
+  }
+}
+
+// 信令服务定义
+service Signaling {
+  // 独立 RPC，便于按功能路由
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+  rpc Pair (PairRequest) returns (PairResponse);
+  rpc Subscribe (SubscribeRequest) returns (SubscribeResponse);
+  rpc PublishStreamManifest (PublishStreamManifestRequest) returns (StreamManifestMutationResponse);
+  rpc DeleteStreamManifest (DeleteStreamManifestRequest) returns (StreamManifestMutationResponse);
+  rpc GetStreamManifest (GetStreamManifestRequest) returns (GetStreamManifestResponse);
+  rpc PublishStreamConfig (PublishStreamConfigRequest) returns (StreamConfigMutationResponse);
+  rpc GetStreamConfig (GetStreamConfigRequest) returns (StreamConfigItem);
+  rpc ListUnpaired (ListUnpairedRequest) returns (ListUnpairedResponse);
+  rpc Ping (Heartbeat) returns (HeartbeatAck);
+
+  // P2P 信息拉取：调用方 sessionId 从 metadata/header 的 session-id 解析。
+  rpc GetP2pInfo (google.protobuf.Empty) returns (GetP2pInfoResponse);
+
+  // 事件推送流（机器人端推荐用这个，而不是 WS）：
+  // 客户端发一个订阅请求以绑定 session，服务器通过 server-streaming 推送 EventMessage。
+  rpc EventStream (EventSubscribe) returns (stream EventMessage);
+}

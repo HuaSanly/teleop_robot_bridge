@@ -1,0 +1,32 @@
+# Camera FOV table for the video StreamConfig (deg). Looked up by encoded width x
+# height. Values are the pinhole-model FOV derived from K (canonical FOV
+# from the calibration tool). Distortion-boundary FOV is kept as a YAML
+# comment for reference but not used at runtime.
+#
+# To add a new resolution: append an entry with the encoder output
+# width/height and pinhole HFOV/VFOV/DFOV in degrees.
+video:
+  fov_table:
+    # 5184 x 1944 full sensor.
+    # Distortion-boundary ref: hfov=114.71 vfov=95.90 dfov=129.68
+    - width:  5184
+      height: 1944
+      hfov:   110.02
+      vfov:    94.09
+      dfov:   121.53
+
+    # 5120 x 1440 SBS (per-eye ROI 2560x1440).
+    # Distortion-boundary ref: hfov=114.40 vfov=83.29 dfov=124.93
+    - width:  5120
+      height: 1440
+      hfov:   109.86
+      vfov:    82.46
+      dfov:   118.22
+
+    # 3840 x 1080 SBS (per-eye 1920x1080).
+    # Distortion-boundary ref: hfov=114.11 vfov=83.07 dfov=124.42
+    - width:  3840
+      height: 1080
+      hfov:   109.66
+      vfov:    82.27
+      dfov:   118.04
